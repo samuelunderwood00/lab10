@@ -98,6 +98,16 @@ architecture arch_imp of full_radio_v1_0_S00_AXI is
 	signal axi_rresp	: std_logic_vector(1 downto 0);
 	signal axi_rvalid	: std_logic;
 
+	signal fir1_tdata	: std_logic_vector(47 downto 0);
+	signal fir1_tvalid	: std_logic;
+    signal fir2_tdata	: std_logic_vector(47 downto 0);
+	signal dds_tdata	: std_logic_vector(15 downto 0);
+	signal dds_tvalid	: std_logic;
+	signal tuner_tdata	: std_logic_vector(C_S_AXI_DATA_WIDTH-1 downto 0);
+	signal tuner_tvalid	: std_logic;
+	signal mult_tdata	: std_logic_vector(C_S_AXI_DATA_WIDTH-1 downto 0);
+	signal mult_tvalid	: std_logic;
+	signal dds_reset    : std_logic;
 	-- Example-specific design signals
 	-- local parameter for addressing 32 bit / 64 bit C_S_AXI_DATA_WIDTH
 	-- ADDR_LSB is used for addressing 32/64 bit registers/memories
@@ -118,8 +128,22 @@ architecture arch_imp of full_radio_v1_0_S00_AXI is
 	signal reg_data_out	:std_logic_vector(C_S_AXI_DATA_WIDTH-1 downto 0);
 	signal byte_index	: integer;
 	signal aw_en	: std_logic;
+	signal clk_count_u : unsigned(31 downto 0);
+	signal clk_count : std_logic_vector(31 downto 0);
+	signal mult_input_a : std_logic_vector(31 downto 0);
 
 COMPONENT dds_compiler_0
+  PORT (
+    aclk : IN STD_LOGIC;
+    aresetn : IN STD_LOGIC;
+    s_axis_phase_tvalid : IN STD_LOGIC;
+    s_axis_phase_tdata : IN STD_LOGIC_VECTOR(31 DOWNTO 0);
+    m_axis_data_tvalid : OUT STD_LOGIC;
+    m_axis_data_tdata : OUT STD_LOGIC_VECTOR(15 DOWNTO 0)
+  );
+    END COMPONENT;
+    
+COMPONENT proc_system_dds_compiler_0_1
   PORT (
     aclk : IN STD_LOGIC;
     aresetn : IN STD_LOGIC;
@@ -129,6 +153,40 @@ COMPONENT dds_compiler_0
     m_axis_data_tdata : OUT STD_LOGIC_VECTOR(31 DOWNTO 0)
   );
     END COMPONENT;
+
+COMPONENT proc_system_fir_compiler_0_0
+  PORT (
+    aclk : IN STD_LOGIC;
+    s_axis_data_tvalid : IN STD_LOGIC;
+    s_axis_data_tready : OUT STD_LOGIC;
+    s_axis_data_tdata : IN STD_LOGIC_VECTOR(31 DOWNTO 0);
+    m_axis_data_tvalid : OUT STD_LOGIC;
+    m_axis_data_tdata : OUT STD_LOGIC_VECTOR(47 DOWNTO 0) 
+  );
+END COMPONENT;
+
+COMPONENT proc_system_fir_compiler_0_1
+  PORT (
+    aclk : IN STD_LOGIC;
+    s_axis_data_tvalid : IN STD_LOGIC;
+    s_axis_data_tready : OUT STD_LOGIC;
+    s_axis_data_tdata : IN STD_LOGIC_VECTOR(47 DOWNTO 0);
+    m_axis_data_tvalid : OUT STD_LOGIC;
+    m_axis_data_tdata : OUT STD_LOGIC_VECTOR(47 DOWNTO 0) 
+  );
+END COMPONENT;
+
+COMPONENT proc_system_cmpy_0_0
+  PORT (
+    aclk : IN STD_LOGIC;
+    s_axis_a_tvalid : IN STD_LOGIC;
+    s_axis_a_tdata : IN STD_LOGIC_VECTOR(31 DOWNTO 0);
+    s_axis_b_tvalid : IN STD_LOGIC;
+    s_axis_b_tdata : IN STD_LOGIC_VECTOR(31 DOWNTO 0);
+    m_axis_dout_tvalid : OUT STD_LOGIC;
+    m_axis_dout_tdata : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) 
+  );
+END COMPONENT;
 
 begin
 	-- I/O Connections assignments
@@ -367,11 +425,11 @@ begin
 	      when b"00" =>
 	        reg_data_out <= slv_reg0;
 	      when b"01" =>
-	        reg_data_out <= x"DEADBEEF";
+	        reg_data_out <= slv_reg1;
 	      when b"10" =>
 	        reg_data_out <= slv_reg2;
 	      when b"11" =>
-	        reg_data_out <= slv_reg3;
+	        reg_data_out <= clk_count;
 	      when others =>
 	        reg_data_out  <= (others => '0');
 	    end case;
@@ -395,20 +453,75 @@ begin
 	  end if;
 	end process;
 
-
+	process( S_AXI_ACLK ) is
+	begin
+	  if (rising_edge (S_AXI_ACLK)) then
+	    if ( S_AXI_ARESETN = '0' ) then
+	      clk_count_u  <= (others => '0');
+	    else
+	       clk_count_u <= clk_count_u + 1;
+	    end if;
+	  end if;
+	end process;
+	
+	clk_count <= std_logic_vector(clk_count_u);
 	-- Add user logic here
 
-your_instance_name : dds_compiler_0
+dds : dds_compiler_0
+  PORT MAP (
+    aclk => s_axi_aclk,
+    aresetn => dds_reset,
+    s_axis_phase_tvalid => '1',
+    s_axis_phase_tdata => slv_reg0,
+    m_axis_data_tvalid => dds_tvalid,
+    m_axis_data_tdata => dds_tdata
+  );
+  
+tuner_dds : proc_system_dds_compiler_0_1
   PORT MAP (
     aclk => s_axi_aclk,
     aresetn => '1',
     s_axis_phase_tvalid => '1',
-    s_axis_phase_tdata => slv_reg0,
-    m_axis_data_tvalid => m_axis_tvalid,
-    m_axis_data_tdata => m_axis_tdata
+    s_axis_phase_tdata => slv_reg1,
+    m_axis_data_tvalid => tuner_tvalid,
+    m_axis_data_tdata => tuner_tdata
   );
 
+mult_input_a <= x"0000" & dds_tdata;
 
+multiplier : proc_system_cmpy_0_0
+  PORT MAP (
+    aclk => s_axi_aclk,
+    s_axis_a_tvalid => dds_tvalid,
+    s_axis_a_tdata => mult_input_a,
+    s_axis_b_tvalid => tuner_tvalid,
+    s_axis_b_tdata => tuner_tdata,
+    m_axis_dout_tvalid => mult_tvalid,
+    m_axis_dout_tdata => mult_tdata
+  ); 
+   
+fir1 : proc_system_fir_compiler_0_0
+  PORT MAP (
+    aclk => s_axi_aclk,
+    s_axis_data_tvalid => mult_tvalid,
+    s_axis_data_tready => open,
+    s_axis_data_tdata => mult_tdata,
+    m_axis_data_tvalid => fir1_tvalid,
+    m_axis_data_tdata => fir1_tdata
+  );
+  
+fir2 : proc_system_fir_compiler_0_1
+  PORT MAP (
+    aclk => s_axi_aclk,
+    s_axis_data_tvalid => fir1_tvalid,
+    s_axis_data_tready => open,
+    s_axis_data_tdata => fir1_tdata,
+    m_axis_data_tvalid => m_axis_tvalid,
+    m_axis_data_tdata => fir2_tdata
+  );
+
+m_axis_tdata <= fir2_tdata(39 downto 24) & fir2_tdata(15 downto 0);
+dds_reset <= not slv_reg2(0);
 	-- User logic ends
 
 end arch_imp;
